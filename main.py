@@ -1,43 +1,67 @@
+import os
+import urllib
 import requests
 from typing import Optional
 from fastapi import FastAPI
 from pydantic import BaseModel
+from tortoise import fields
+from tortoise.models import Model
+from tortoise.contrib.fastapi import register_tortoise
+from tortoise.contrib.pydantic import pydantic_model_creator
 
 
 app = FastAPI()
 
 db = []
 
-class City(BaseModel):
-    name: str
-    timezone: str
+class City(Model):
+    id = fields.IntField(pk=True)
+    name = fields.CharField(50, unique=True)
+    timezone = fields.CharField(50)
+
+    def current_time(self) -> str:
+        r = requests.get(f'http://worldtimeapi.org/api/timezone/{self.timezone}')
+        current_time = r.json()['datetime']
+        return current_time
+
+    class PydanticMeta:
+        computed = ('current_time', )
+
+City_Pydantic = pydantic_model_creator(City, name='City')
+City_Input_Pydantic = pydantic_model_creator(City, name='City_Input', exclude_readonly=True)
+
+# class City(BaseModel):
+#     name: str
+#     timezone: str
  
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
 
 @app.get("/cities")
-def get_cities():
-    results = []
-    for city in db:
-        r = requests.get(f'http://worldtimeapi.org/api/timezone/{city["timezone"]}')
-        current_time = r.json()['datetime']
-        results.append({'name': city['name'], 'timezone': city['timezone'], 'current_time': current_time})
-    return results
+async def get_cities():
+    return await City_Pydantic.from_queryset(City.all())
 
 @app.get("/cities/{city_id}")
-def get_city(city_id: int):
-    city = db[city_id - 1]
-    r = requests.get(f'http://worldtimeapi.org/api/timezone/{city["timezone"]}')
-    current_time = r.json()['datetime']
-    return {'name': city['name'], 'timezone': city['timezone'], 'current_time': current_time}
+async def get_city(city_id: int):
+    return await City_Pydantic.from_queryset_single(City.get(id=city_id))
+
 
 @app.post('/cities')
-def create_city(city: City):
-    db.append(city.dict())
-    return db[-1]
+async def create_city(city: City_Input_Pydantic):
+    print("holaa!!!!!!!!!!!")
+    city_obj = await City.create(**city.dict(exclude_unset=True))
+    return await City_Pydantic.from_tortoise_orm(city_obj)
 
 @app.delete('/cities/{city_id}')
-def delete_city(city_id: int):
-    db.pop(city_id - 1)
+async def delete_city(city_id: int):
+    await City.filter(id=city_id).delete()
     return {}
+
+register_tortoise(
+    app,
+    db_url='sqlite://db.sqlite3',
+    modules={'models': ['main']},
+    generate_schemas=True,
+    add_exception_handlers=True
+)
